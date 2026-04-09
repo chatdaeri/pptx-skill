@@ -48,10 +48,13 @@ from PIL import Image, ImageDraw, ImageFont
 
 # Constants
 THUMBNAIL_WIDTH = 300  # Fixed thumbnail width in pixels
-CONVERSION_DPI = 100  # DPI for PDF to image conversion
+CONVERSION_DPI = 72  # DPI for PDF to image conversion (72 is sufficient for 300px thumbnails)
 MAX_COLS = 6  # Maximum number of columns
 DEFAULT_COLS = 5  # Default number of columns
 JPEG_QUALITY = 95  # JPEG compression quality
+# Dedicated LibreOffice profile keeps soffice startup light and avoids
+# clobbering the user's personal LibreOffice profile.
+LO_USER_PROFILE = "/tmp/lo-pptx-skill-profile"
 
 # Grid layout constants
 GRID_PADDING = 20  # Padding between thumbnails
@@ -128,12 +131,24 @@ def convert_to_images(pptx_path, temp_dir, dpi):
     """Convert PowerPoint to images via LibreOffice (PDF) + pdftoppm."""
     pdf_path = temp_dir / f"{pptx_path.stem}.pdf"
 
-    # Convert to PDF via LibreOffice
+    # Convert to PDF via LibreOffice.
+    # Flags minimise cold-start cost:
+    #   -env:UserInstallation  — dedicated profile (no first-run wizard / lock churn)
+    #   --norestore            — skip crash recovery scan
+    #   --nolockcheck          — skip global lock file check
+    #   --nologo --nodefault   — skip splash / default-document load
+    #   --nofirststartwizard   — skip first-start wizard
     print("Converting to PDF via LibreOffice...")
     result = subprocess.run(
         [
             "soffice",
+            f"-env:UserInstallation=file://{LO_USER_PROFILE}",
             "--headless",
+            "--norestore",
+            "--nolockcheck",
+            "--nologo",
+            "--nodefault",
+            "--nofirststartwizard",
             "--convert-to",
             "pdf",
             "--outdir",

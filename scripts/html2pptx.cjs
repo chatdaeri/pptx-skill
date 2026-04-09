@@ -193,9 +193,10 @@ function addElements(slideData, targetSlide, pres) {
       let adjustedX = el.position.x;
       let adjustedW = el.position.w;
 
-      // Make single-line text 2% wider to account for underestimate
+      // Make single-line text wider to account for font metric underestimate
+      // Korean (CJK) glyphs are wider than Latin; 6% compensates for wrapping
       if (isSingleLine) {
-        const widthIncrease = el.position.w * 0.02;
+        const widthIncrease = el.position.w * 0.06;
         const align = el.style.align;
 
         if (align === 'center') {
@@ -896,7 +897,8 @@ async function extractSlideData(page) {
 async function html2pptx(htmlFile, pres, options = {}) {
   const {
     tmpDir = process.env.TMPDIR || '/tmp',
-    slide = null
+    slide = null,
+    browser: sharedBrowser = null  // Optional: pass a pre-launched browser to reuse across calls
   } = options;
 
   try {
@@ -906,7 +908,9 @@ async function html2pptx(htmlFile, pres, options = {}) {
       launchOptions.channel = 'chrome';
     }
 
-    const browser = await chromium.launch(launchOptions);
+    // Reuse shared browser if provided, otherwise launch our own (and close it in finally)
+    const browser = sharedBrowser || await chromium.launch(launchOptions);
+    const ownBrowser = !sharedBrowser;
 
     let bodyDimensions;
     let slideData;
@@ -914,8 +918,9 @@ async function html2pptx(htmlFile, pres, options = {}) {
     const filePath = path.isAbsolute(htmlFile) ? htmlFile : path.join(process.cwd(), htmlFile);
     const validationErrors = [];
 
+    let page;
     try {
-      const page = await browser.newPage();
+      page = await browser.newPage();
       page.on('console', (msg) => {
         // Log the message text to your test runner's console
         console.log(`Browser console: ${msg.text()}`);
@@ -932,7 +937,13 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
       slideData = await extractSlideData(page);
     } finally {
-      await browser.close();
+      // Always close the page; only close the browser if we own it
+      if (page) {
+        try { await page.close(); } catch (_) {}
+      }
+      if (ownBrowser) {
+        try { await browser.close(); } catch (_) {}
+      }
     }
 
     // Collect all validation errors
