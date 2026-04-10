@@ -191,14 +191,6 @@ node convert.cjs && python3 "$SKILL_DIR/scripts/thumbnail.py" output.pptx thumbn
 
 ---
 
-## 관련 스킬
-
-- **pptx-multi-agent** — Builder + Reviewer 피드백 루프로 품질을 더 높이는 고급 버전
-- **chatdaeri-ppt** — CHATdaeri 브랜드 가이드라인 자동 적용 버전
-- **marp-slides-master** — Marp 기반 프레젠테이션
-
----
-
 ## 라이선스
 
 MIT
