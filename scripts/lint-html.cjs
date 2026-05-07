@@ -17,6 +17,14 @@
  *   8. <div>에 background-image
  *   9. .placeholder 요소 width/height = 0
  *
+ * 차트·표 디폴트(SVG→PNG 캡처) 모드 추가 룰:
+ *  10. <table>/<th>/<td> 태그 사용 금지 (금지 #1·2·19)
+ *  11. <div class="td"|"th"> 직계 자식에 unwrapped text (금지 #3)
+ *  12. <div> 에 transform:rotate(...) 사용 (금지 #11)
+ *  13. SVG <rect>/<polyline>/<circle> 이 [data-pptx-image] 컨테이너 밖에 있음 (금지 #12)
+ *  14. SVG <rect height="0"> 또는 빈 polyline points (금지 #13)
+ *  15. [data-pptx-image] 컨테이너 안에 <h1>/<h2> 헤딩 포함 (금지 #21)
+ *
  * 사용법:
  *   node lint-html.cjs slides/               # slides/*.html 전부 검사
  *   node lint-html.cjs slides/slide-01.html  # 단일 파일 검사
@@ -182,6 +190,87 @@ async function lintSlide(page, htmlFile) {
             'Check the layout CSS.'
           );
         }
+      }
+
+      // 규칙 10: <table>/<th>/<td> 태그 사용 금지 (금지 #1·2·19)
+      // Exception: inside [data-pptx-image] container, the table is rasterized as PNG
+      // so html2pptx never tries to convert it — table semantics are fine there.
+      if ((tag === 'TABLE' || tag === 'TH' || tag === 'TD' || tag === 'THEAD' || tag === 'TBODY' || tag === 'TR') &&
+          !el.closest('[data-pptx-image]')) {
+        errors.push(
+          `<${tag.toLowerCase()}> tag is not supported by html2pptx. ` +
+          `Use <div class="t"> / <div class="tr"> / <div class="th"> / <div class="td"> with CSS grid instead, ` +
+          `or wrap the table in a <div data-pptx-image="true"> container for SVG→PNG capture.`
+        );
+      }
+
+      // 규칙 11: <div class="td"|"th"> 직계 자식 raw text (금지 #3)
+      // Exception: inside [data-pptx-image], cells are rasterized as PNG so structure is preserved.
+      const _cls = el.className && (typeof el.className === 'string' ? el.className : el.className.baseVal || '');
+      if (tag === 'DIV' && _cls && (_cls.split(/\s+/).includes('td') || _cls.split(/\s+/).includes('th')) &&
+          !el.closest('[data-pptx-image]')) {
+        for (const node of el.childNodes) {
+          if (node.nodeType === Node.TEXT_NODE) {
+            const text = node.textContent.trim();
+            if (text) {
+              errors.push(
+                `<div class="${_cls}"> contains unwrapped text "${text.substring(0, 50)}${text.length > 50 ? '...' : ''}". ` +
+                'Cell text must be wrapped in <p>, <h1>-<h6>, <ul>, or <ol>.'
+              );
+            }
+          }
+        }
+      }
+
+      // 규칙 12: <div> 에 transform:rotate(...) (금지 #11 — 차트를 div 회전으로 그리는 패턴)
+      if (tag === 'DIV') {
+        const tf = computed.transform;
+        if (tf && tf !== 'none' && /matrix|rotate/.test(tf)) {
+          // 단순한 0도/identity 는 제외
+          if (tf !== 'matrix(1, 0, 0, 1, 0, 0)') {
+            errors.push(
+              `<div> has CSS transform "${tf}". ` +
+              'PPTX ignores div rotation — draw rotated charts as SVG inside a <div data-pptx-image="true"> container instead.'
+            );
+          }
+        }
+      }
+
+      // 규칙 13: SVG <rect>/<polyline>/<circle> 이 [data-pptx-image] 밖에 있음 (금지 #12)
+      if ((tag === 'rect' || tag === 'polyline' || tag === 'circle' || tag === 'path' || tag === 'line') &&
+          el.namespaceURI === 'http://www.w3.org/2000/svg') {
+        if (!el.closest('[data-pptx-image]')) {
+          errors.push(
+            `<svg ${tag}> at "${el.id || el.tagName}" is outside any [data-pptx-image] container. ` +
+            'html2pptx does not convert SVG shapes to PPTX shapes — wrap the SVG in <div data-pptx-image="true"> for PNG capture.'
+          );
+        }
+      }
+
+      // 규칙 14: SVG <rect height="0"> / 빈 polyline points (금지 #13)
+      if (tag === 'rect' && el.namespaceURI === 'http://www.w3.org/2000/svg') {
+        const h = el.getAttribute('height');
+        if (h !== null && parseFloat(h) === 0) {
+          errors.push(
+            `<rect> has height="0" — empty placeholder bars are not allowed. Delete unused <rect> elements entirely.`
+          );
+        }
+      }
+      if (tag === 'polyline' && el.namespaceURI === 'http://www.w3.org/2000/svg') {
+        const pts = el.getAttribute('points');
+        if (pts !== null && pts.trim() === '') {
+          errors.push(
+            `<polyline> has empty points — delete unused <polyline> elements entirely instead of leaving empty.`
+          );
+        }
+      }
+
+      // 규칙 15: [data-pptx-image] 컨테이너 안에 <h1>/<h2> 헤딩 (금지 #21)
+      if ((tag === 'H1' || tag === 'H2') && el.closest('[data-pptx-image]')) {
+        errors.push(
+          `<${tag.toLowerCase()}> is inside a [data-pptx-image] container — title/header text would be rasterized as PNG and lose editability. ` +
+          'Move headings outside the capture container so PPTX renders them as native text.'
+        );
       }
     });
 

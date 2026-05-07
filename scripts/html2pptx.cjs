@@ -134,6 +134,10 @@ function addElements(slideData, targetSlide, pres) {
   for (const el of slideData.elements) {
     if (el.type === 'image') {
       let imagePath = el.src.startsWith('file://') ? el.src.replace('file://', '') : el.src;
+      // file:// URLs are percent-encoded (spaces → %20). pptxgenjs needs the decoded fs path.
+      if (!imagePath.startsWith('http')) {
+        try { imagePath = decodeURIComponent(imagePath); } catch (_) {}
+      }
       targetSlide.addImage({
         path: imagePath,
         x: el.position.x,
@@ -529,6 +533,7 @@ async function extractSlideData(page) {
     // Process all elements
     const elements = [];
     const placeholders = [];
+    const imageRegions = [];
     const textTags = ['P', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'UL', 'OL', 'LI'];
     const processed = new Set();
 
@@ -555,8 +560,33 @@ async function extractSlideData(page) {
         }
       }
 
+      // Extract data-pptx-image elements — capture as PNG outside page.evaluate
+      // (skip extraction here; mark element and all descendants as processed)
+      if (el.hasAttribute && el.hasAttribute('data-pptx-image')) {
+        const rect = el.getBoundingClientRect();
+        if (rect.width === 0 || rect.height === 0) {
+          errors.push(
+            `data-pptx-image element "${el.id || el.tagName.toLowerCase()}" has ${rect.width === 0 ? 'width: 0' : 'height: 0'}. Check the layout CSS.`
+          );
+        } else {
+          imageRegions.push({
+            selectorIndex: imageRegions.length,
+            x: pxToInch(rect.left),
+            y: pxToInch(rect.top),
+            w: pxToInch(rect.width),
+            h: pxToInch(rect.height)
+          });
+        }
+        processed.add(el);
+        // Also mark all descendants as processed so inner SVG/text isn't extracted separately
+        el.querySelectorAll('*').forEach(child => processed.add(child));
+        return;
+      }
+
       // Extract placeholder elements (for charts, etc.)
-      if (el.className && el.className.includes('placeholder')) {
+      // SVG elements have className as SVGAnimatedString (not string) — coerce safely.
+      const _cls = el.className && (typeof el.className === 'string' ? el.className : el.className.baseVal || '');
+      if (_cls && _cls.includes('placeholder')) {
         const rect = el.getBoundingClientRect();
         if (rect.width === 0 || rect.height === 0) {
           errors.push(
@@ -890,7 +920,7 @@ async function extractSlideData(page) {
       processed.add(el);
     });
 
-    return { background, elements, placeholders, errors };
+    return { background, elements, placeholders, imageRegions, errors };
   });
 }
 
@@ -903,7 +933,11 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
   try {
     // Use Chrome on macOS, default Chromium on Unix
-    const launchOptions = { env: { TMPDIR: tmpDir } };
+    const launchOptions = {
+      env: { TMPDIR: tmpDir },
+      // Allow file:// fonts/CSS referenced by absolute path (else headless Chrome blocks them)
+      args: ['--allow-file-access-from-files']
+    };
     if (process.platform === 'darwin') {
       launchOptions.channel = 'chrome';
     }
@@ -936,6 +970,17 @@ async function html2pptx(htmlFile, pres, options = {}) {
       });
 
       slideData = await extractSlideData(page);
+
+      // Capture [data-pptx-image] regions as PNG (SVG→PNG default mode for charts/diagrams)
+      if (slideData.imageRegions && slideData.imageRegions.length > 0) {
+        const locators = await page.locator('[data-pptx-image]').all();
+        for (let i = 0; i < slideData.imageRegions.length; i++) {
+          const loc = locators[i];
+          if (!loc) continue;
+          const buf = await loc.screenshot({ omitBackground: true });
+          slideData.imageRegions[i].dataUrl = 'data:image/png;base64,' + buf.toString('base64');
+        }
+      }
     } finally {
       // Always close the page; only close the browser if we own it
       if (page) {
@@ -977,6 +1022,14 @@ async function html2pptx(htmlFile, pres, options = {}) {
 
     await addBackground(slideData, targetSlide, tmpDir);
     addElements(slideData, targetSlide, pres);
+
+    // Inject [data-pptx-image] PNG captures (SVG charts, diagrams)
+    if (slideData.imageRegions && slideData.imageRegions.length > 0) {
+      for (const r of slideData.imageRegions) {
+        if (!r.dataUrl) continue;
+        targetSlide.addImage({ data: r.dataUrl, x: r.x, y: r.y, w: r.w, h: r.h });
+      }
+    }
 
     return { slide: targetSlide, placeholders: slideData.placeholders };
   } catch (error) {
