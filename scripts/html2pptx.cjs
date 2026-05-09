@@ -123,6 +123,15 @@ async function addBackground(slideData, targetSlide, tmpDir) {
     let imagePath = slideData.background.path.startsWith('file://')
       ? slideData.background.path.replace('file://', '')
       : slideData.background.path;
+    // Windows: 'file:///C:/...' → after replace becomes '/C:/...' which Node.js
+    // then mangles into 'C:\C:\...' (ENOENT). Strip the leading slash so the
+    // drive letter is at position 0.
+    if (process.platform === 'win32' && /^\/[a-zA-Z]:\//.test(imagePath)) {
+      imagePath = imagePath.slice(1);
+    }
+    if (!imagePath.startsWith('http')) {
+      try { imagePath = decodeURIComponent(imagePath); } catch (_) {}
+    }
     targetSlide.background = { path: imagePath };
   } else if (slideData.background.type === 'color' && slideData.background.value) {
     targetSlide.background = { color: slideData.background.value };
@@ -134,6 +143,12 @@ function addElements(slideData, targetSlide, pres) {
   for (const el of slideData.elements) {
     if (el.type === 'image') {
       let imagePath = el.src.startsWith('file://') ? el.src.replace('file://', '') : el.src;
+      // Windows: 'file:///C:/...' → after replace becomes '/C:/...' which Node.js
+      // then mangles into 'C:\C:\...' (ENOENT). Strip the leading slash so the
+      // drive letter is at position 0.
+      if (process.platform === 'win32' && /^\/[a-zA-Z]:\//.test(imagePath)) {
+        imagePath = imagePath.slice(1);
+      }
       // file:// URLs are percent-encoded (spaces → %20). pptxgenjs needs the decoded fs path.
       if (!imagePath.startsWith('http')) {
         try { imagePath = decodeURIComponent(imagePath); } catch (_) {}
@@ -953,8 +968,19 @@ async function html2pptx(htmlFile, pres, options = {}) {
     const validationErrors = [];
 
     let page;
+    let context;
     try {
-      page = await browser.newPage();
+      // Use a context with deviceScaleFactor=2 so element.screenshot() captures
+      // PNG regions at 2x pixel density. Without this, headless Chromium captures
+      // at 1x — a 720×405pt slide produces ~960×540px PNG, which looks blurry
+      // once rendered onto a 1920×1080 PPTX slide. macOS Retina hides this
+      // because the OS-level chromium build is retina-aware; Windows/Linux
+      // headless are not, so we set DSR=2 explicitly for cross-platform parity.
+      context = await browser.newContext({
+        viewport: { width: 1280, height: 720 },
+        deviceScaleFactor: 2,
+      });
+      page = await context.newPage();
       page.on('console', (msg) => {
         // Log the message text to your test runner's console
         console.log(`Browser console: ${msg.text()}`);
@@ -982,9 +1008,12 @@ async function html2pptx(htmlFile, pres, options = {}) {
         }
       }
     } finally {
-      // Always close the page; only close the browser if we own it
+      // Always close the page+context; only close the browser if we own it
       if (page) {
         try { await page.close(); } catch (_) {}
+      }
+      if (context) {
+        try { await context.close(); } catch (_) {}
       }
       if (ownBrowser) {
         try { await browser.close(); } catch (_) {}
